@@ -127,6 +127,8 @@ function viewOf_(json, show) {
   if (has('settings')) trip.clean = d.trip.clean;
   return {
     trip: trip,
+    theme: d.theme || '',
+    darkMode: d.darkMode || '',
     people: show.length ? d.people : [],
     expenses: has('expenses') ? d.expenses : [],
     payments: has('pays') ? d.payments : [],

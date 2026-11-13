@@ -1,4 +1,4 @@
-import type { DarkModeSetting, PaletteKey, SyncConfig, TripState } from '../types';
+import type { DarkModeSetting, SyncConfig, ThemeKey, TripState } from '../types';
 import { blankState, normalizeState } from './calc';
 
 export const STORAGE_KEY = 'campsplit-v1';
@@ -152,7 +152,7 @@ export function saveDarkMode(mode: DarkModeSetting): void {
   }
 }
 
-export function applyThemeClasses(mode: DarkModeSetting, palette: PaletteKey | ''): void {
+export function applyThemeClasses(mode: DarkModeSetting, palette: ThemeKey | ''): void {
   const isDark =
     mode === 'dark' || (mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
   document.documentElement.classList.toggle('dark', isDark);
@@ -199,7 +199,7 @@ export async function unpackBackup(token: string): Promise<unknown> {
 }
 
 let lastIconKey = '';
-export function updateDynamicFavicon(state: TripState, palette: PaletteKey | ''): void {
+export function updateDynamicFavicon(state: TripState, palette: ThemeKey | ''): void {
   const t = state.trip;
   const k = `${t.img || t.emoji}|${palette}`;
   if (k === lastIconKey) return;

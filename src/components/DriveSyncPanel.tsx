@@ -20,6 +20,7 @@ interface DriveSyncPanelProps {
   conflict: boolean;
   busy: boolean;
   pendingReceipts: number;
+  cardClass?: string;
   onConnect: (url: string, code: string) => Promise<void>;
   onSyncNow: () => Promise<void>;
   onLoadFromDrive: () => Promise<void>;
@@ -36,6 +37,7 @@ export function DriveSyncPanel({
   conflict,
   busy,
   pendingReceipts,
+  cardClass = 'rounded-2xl bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-800',
   onConnect,
   onSyncNow,
   onLoadFromDrive,
@@ -91,7 +93,7 @@ export function DriveSyncPanel({
   return (
     <section
       id="sec-sync"
-      className="rounded-2xl bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-800 p-4 sm:p-6"
+      className={`${cardClass} p-4 sm:p-6`}
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
@@ -111,7 +113,7 @@ export function DriveSyncPanel({
       </div>
 
       <form onSubmit={handleConnectSubmit} className="mt-4 grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
-        <div className="md:col-span-6">
+        <div className="md:col-span-6 min-w-0">
           <label className="block text-xs font-medium text-stone-500 dark:text-slate-400 mb-1">
             Apps Script Web app URL
           </label>
@@ -120,10 +122,10 @@ export function DriveSyncPanel({
             value={urlInput}
             onChange={(e) => setUrlInput(e.target.value)}
             placeholder="https://script.google.com/macros/s/…/exec"
-            className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-3.5 py-2.5 text-sm text-stone-900 dark:text-slate-100 placeholder:text-stone-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+            className="w-full min-w-0 rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-3.5 py-2.5 text-sm text-stone-900 dark:text-slate-100 placeholder:text-stone-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
           />
         </div>
-        <div className="md:col-span-4">
+        <div className="md:col-span-4 min-w-0">
           <label className="block text-xs font-medium text-stone-500 dark:text-slate-400 mb-1">
             Access code
           </label>
@@ -133,10 +135,10 @@ export function DriveSyncPanel({
             value={codeInput}
             onChange={(e) => setCodeInput(e.target.value)}
             placeholder="12+ char admin code"
-            className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-3.5 py-2.5 text-sm text-stone-900 dark:text-slate-100 placeholder:text-stone-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+            className="w-full min-w-0 rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-3.5 py-2.5 text-sm text-stone-900 dark:text-slate-100 placeholder:text-stone-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
           />
         </div>
-        <div className="md:col-span-2">
+        <div className="md:col-span-2 min-w-0">
           <button
             type="submit"
             disabled={busy}

@@ -1,17 +1,28 @@
 import { useState } from 'react';
 import { Copy, QrCode, Share2, Trash2, UserPlus, Users } from 'lucide-react';
-import type { QrSharePayload, SectionKey, SyncConfig, ViewerUser } from '../types';
+import type { DarkModeSetting, QrSharePayload, SectionKey, SyncConfig, ThemeKey, ViewerUser } from '../types';
 import { ALL_SECTIONS } from '../lib/calc';
 import { buildShortShareLink, callDriveApi } from '../lib/driveSync';
 
 interface AdminSharePanelProps {
   cfg: SyncConfig | null;
   users: ViewerUser[];
+  theme: ThemeKey | '';
+  darkMode: DarkModeSetting;
+  cardClass: string;
   onUsersChange: (users: ViewerUser[]) => void;
   onOpenQr: (payload: QrSharePayload) => void;
 }
 
-export function AdminSharePanel({ cfg, users, onUsersChange, onOpenQr }: AdminSharePanelProps) {
+export function AdminSharePanel({
+  cfg,
+  users,
+  theme,
+  darkMode,
+  cardClass,
+  onUsersChange,
+  onOpenQr,
+}: AdminSharePanelProps) {
   const [defaultShow, setDefaultShow] = useState<SectionKey[]>(ALL_SECTIONS.map((s) => s.key));
   const [friendName, setFriendName] = useState('');
   const [busy, setBusy] = useState(false);
@@ -64,7 +75,7 @@ export function AdminSharePanel({ cfg, users, onUsersChange, onOpenQr }: AdminSh
         everyone = res.users.find((u) => u.name === 'Everyone');
       }
       if (!everyone) throw new Error('Could not find Everyone link');
-      const url = buildShortShareLink(cfg, everyone.code, 'Everyone');
+      const url = buildShortShareLink(cfg, everyone.code, 'Everyone', theme, darkMode);
 
       if (mode === 'qr') {
         onOpenQr({
@@ -115,7 +126,7 @@ export function AdminSharePanel({ cfg, users, onUsersChange, onOpenQr }: AdminSh
 
   const handleCopyUser = async (user: ViewerUser) => {
     if (!cfg) return;
-    const url = buildShortShareLink(cfg, user.code, user.name);
+    const url = buildShortShareLink(cfg, user.code, user.name, theme, darkMode);
     try {
       await navigator.clipboard.writeText(url);
       showFb(`Short link for ${user.name} copied.`, true);
@@ -130,7 +141,7 @@ export function AdminSharePanel({ cfg, users, onUsersChange, onOpenQr }: AdminSh
 
   const handleShareUser = async (user: ViewerUser) => {
     if (!cfg) return;
-    const url = buildShortShareLink(cfg, user.code, user.name);
+    const url = buildShortShareLink(cfg, user.code, user.name, theme, darkMode);
     if (navigator.share) {
       try {
         await navigator.share({
@@ -148,7 +159,7 @@ export function AdminSharePanel({ cfg, users, onUsersChange, onOpenQr }: AdminSh
 
   const handleQrUser = (user: ViewerUser) => {
     if (!cfg) return;
-    const url = buildShortShareLink(cfg, user.code, user.name);
+    const url = buildShortShareLink(cfg, user.code, user.name, theme, darkMode);
     onOpenQr({
       title: `${user.name} · View-only link`,
       subtitle: 'Scan with any phone camera for live read-only access',
@@ -171,7 +182,7 @@ export function AdminSharePanel({ cfg, users, onUsersChange, onOpenQr }: AdminSh
   return (
     <section
       id="sec-share"
-      className="rounded-2xl bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-800 p-4 sm:p-6"
+      className={`${cardClass} p-4 sm:p-6`}
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>

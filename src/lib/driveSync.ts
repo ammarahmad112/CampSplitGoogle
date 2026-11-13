@@ -1,4 +1,5 @@
-import type { SectionKey, SyncConfig, TripState, ViewerUser } from '../types';
+import type { DarkModeSetting, SectionKey, SyncConfig, ThemeKey, TripState, ViewerUser } from '../types';
+import { mapLegacyTheme } from './themes';
 
 export interface DriveApiResponse {
   ok: boolean;
@@ -73,13 +74,20 @@ export function getCleanBaseUrl(): string {
   return window.location.origin + window.location.pathname;
 }
 
-export function buildShortShareLink(cfg: SyncConfig, code: string, name: string): string {
+export function buildShortShareLink(
+  cfg: SyncConfig,
+  code: string,
+  name: string,
+  theme?: ThemeKey | '',
+  darkMode?: DarkModeSetting
+): string {
   const base = getCleanBaseUrl();
   const match = /^https:\/\/script\.google\.com\/macros\/s\/([\w-]+)\/exec$/.exec(cfg.url.trim());
+  const hint = theme ? `~${theme}${darkMode ? '.' + darkMode : ''}` : '';
   if (match) {
-    return `${base}#j=${match[1]}.${code}`;
+    return `${base}#j=${match[1]}.${code}${hint}`;
   }
-  return `${base}#join=${toBase64Url(JSON.stringify({ u: cfg.url, c: code, n: name }))}`;
+  return `${base}#join=${toBase64Url(JSON.stringify({ u: cfg.url, c: code, n: name, t: theme, d: darkMode }))}`;
 }
 
 export function buildDevicePairLink(cfg: SyncConfig): string {
@@ -96,26 +104,53 @@ export interface ParsedHashLink {
   url: string;
   code: string;
   name?: string;
+  hintTheme?: ThemeKey;
+  hintDark?: DarkModeSetting;
 }
 
 export function parseHashConnectLink(hash: string): ParsedHashLink | null {
   try {
     if (hash.startsWith('#j=')) {
-      const parts = hash.slice(3).split('.');
+      const [mainPart, hintPart] = hash.slice(3).split('~');
+      const parts = mainPart.split('.');
       if (parts.length < 2) return null;
       const scriptId = parts[0].replace(/[^\w-]/g, '');
       const code = parts.slice(1).join('.');
       if (!scriptId || !code) return null;
+      let hintTheme: ThemeKey | undefined;
+      let hintDark: DarkModeSetting | undefined;
+      if (hintPart) {
+        const [t, d] = hintPart.split('.');
+        if (t) hintTheme = mapLegacyTheme(t);
+        if (d === 'light' || d === 'dark' || d === 'system') hintDark = d;
+      }
       return {
         type: 'join',
         url: `https://script.google.com/macros/s/${scriptId}/exec`,
         code,
+        hintTheme,
+        hintDark,
       };
     }
     if (hash.startsWith('#join=')) {
-      const parsed = JSON.parse(fromBase64Url(hash.slice(6))) as { u?: string; c?: string; n?: string };
+      const parsed = JSON.parse(fromBase64Url(hash.slice(6))) as {
+        u?: string;
+        c?: string;
+        n?: string;
+        t?: string;
+        d?: string;
+      };
       if (!parsed.u || !parsed.c || !/^https:\/\/script\.google\.com\//.test(parsed.u)) return null;
-      return { type: 'join', url: parsed.u, code: parsed.c, name: parsed.n };
+      const hintDark =
+        parsed.d === 'light' || parsed.d === 'dark' || parsed.d === 'system' ? parsed.d : undefined;
+      return {
+        type: 'join',
+        url: parsed.u,
+        code: parsed.c,
+        name: parsed.n,
+        hintTheme: parsed.t ? mapLegacyTheme(parsed.t) : undefined,
+        hintDark,
+      };
     }
     if (hash.startsWith('#p=')) {
       const parts = hash.slice(3).split('.');
@@ -274,6 +309,8 @@ function viewOf_(json, show) {
   if (has('settings')) trip.clean = d.trip.clean;
   return {
     trip: trip,
+    theme: d.theme || '',
+    darkMode: d.darkMode || '',
     people: show.length ? d.people : [],
     expenses: has('expenses') ? d.expenses : [],
     payments: has('pays') ? d.payments : [],

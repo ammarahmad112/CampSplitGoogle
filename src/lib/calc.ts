@@ -1,11 +1,5 @@
-import type { CalcResult, Expense, PaletteKey, Person, SectionKey, TripState } from '../types';
-
-export const PALETTES: { key: PaletteKey; label: string; swatch: string }[] = [
-  { key: 'forest', label: 'Forest', swatch: '#15803d' },
-  { key: 'ocean', label: 'Ocean', swatch: '#0369a1' },
-  { key: 'sunset', label: 'Sunset', swatch: '#c2410c' },
-  { key: 'indigo', label: 'Indigo', swatch: '#4338ca' },
-];
+import type { CalcResult, DarkModeSetting, Expense, Person, SectionKey, TripState } from '../types';
+import { mapLegacyTheme } from './themes';
 
 export const ALL_SECTIONS: { key: SectionKey; label: string }[] = [
   { key: 'settings', label: 'Trip settings' },
@@ -40,7 +34,7 @@ export function blankState(): TripState {
     expenses: [],
     payments: [],
     contribs: [],
-    theme: 'forest',
+    theme: 'trailhead',
   };
 }
 
@@ -110,11 +104,11 @@ export function normalizeState(raw: unknown): TripState {
     date: dt(x.date),
   }));
 
-  const theme = PALETTES.some((p) => p.key === o.theme)
-    ? (o.theme as PaletteKey)
-    : o.theme === 'lavender'
-      ? 'indigo'
-      : 'forest';
+  const theme = mapLegacyTheme(o.theme);
+  const darkMode =
+    o.darkMode === 'light' || o.darkMode === 'dark' || o.darkMode === 'system'
+      ? (o.darkMode as DarkModeSetting)
+      : undefined;
 
   const result: TripState = {
     trip,
@@ -123,6 +117,7 @@ export function normalizeState(raw: unknown): TripState {
     payments,
     contribs,
     theme,
+    ...(darkMode ? { darkMode } : {}),
   };
 
   const lock = o.lock && typeof o.lock === 'object' ? (o.lock as Record<string, unknown>) : null;

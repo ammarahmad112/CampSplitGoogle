@@ -13,6 +13,7 @@ import {
   Lock,
   Monitor,
   Moon,
+  Palette,
   Paperclip,
   Plus,
   QrCode,
@@ -30,17 +31,16 @@ import type {
   DarkModeSetting,
   Expense,
   ExpenseCategory,
-  PaletteKey,
   PinLock,
   QrSharePayload,
   ReceiptMeta,
   SectionKey,
   SyncConfig,
+  ThemeKey,
   TripState,
   ViewerUser,
 } from './types';
 import {
-  PALETTES,
   blankState,
   calcTrip,
   formatMoney,
@@ -52,6 +52,7 @@ import {
   todayStr,
   uid,
 } from './lib/calc';
+import { getThemeConfig } from './lib/themes';
 import {
   TV_MODE_KEY,
   applyThemeClasses,
@@ -85,6 +86,8 @@ import { PinLockModal } from './components/PinLockModal';
 import { AdminSharePanel } from './components/AdminSharePanel';
 import { DriveSyncPanel } from './components/DriveSyncPanel';
 import { CategoryPieChart } from './components/CategoryPieChart';
+import { SummaryBalances } from './components/SummaryBalances';
+import { ThemePickerModal } from './components/ThemePickerModal';
 
 interface ConfirmDialogState {
   title: string;
@@ -144,6 +147,7 @@ export default function App() {
   const [qrPayload, setQrPayload] = useState<QrSharePayload | null>(null);
   const [lightboxExpense, setLightboxExpense] = useState<Expense | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
+  const [themePickerOpen, setThemePickerOpen] = useState(false);
 
   // Form states — Friends
   const [friendName, setFriendName] = useState('');
@@ -204,19 +208,21 @@ export default function App() {
   const calc = useMemo(() => calcTrip(state), [state]);
   const money = useCallback((v: number) => formatMoney(v, state.trip.cur), [state.trip.cur]);
 
+  const activeTheme: ThemeKey = state.theme || 'trailhead';
+  const themeConfig = useMemo(() => getThemeConfig(activeTheme), [activeTheme]);
+
   // Apply Dark Mode & Palette classes + System dark mode listener
   useEffect(() => {
-    const palette = (state.theme || 'forest') as PaletteKey;
-    applyThemeClasses(darkMode, palette);
-    updateDynamicFavicon(state, palette);
+    applyThemeClasses(darkMode, activeTheme);
+    updateDynamicFavicon(state, activeTheme);
 
     const media = window.matchMedia('(prefers-color-scheme: dark)');
     const onMedia = () => {
-      if (darkMode === 'system') applyThemeClasses('system', palette);
+      if (darkMode === 'system') applyThemeClasses('system', activeTheme);
     };
     media.addEventListener('change', onMedia);
     return () => media.removeEventListener('change', onMedia);
-  }, [darkMode, state]);
+  }, [darkMode, activeTheme, state]);
 
   // Apply TV Mode
   useEffect(() => {
@@ -371,13 +377,27 @@ export default function App() {
     return nextCfg;
   }, []);
 
-  // Apply remote state smoothly in-place (no jarring reload!)
+  // Apply remote state smoothly in-place (keeping viewer theme & appearance in sync with admin)
   const applyRemoteState = useCallback(
     (rawJson: string, updatedTs: number, baseCfg: SyncConfig) => {
       const cur = stateRef.current;
-      const incoming = normalizeState(JSON.parse(rawJson));
+      const rawParsed = JSON.parse(rawJson) as Record<string, unknown>;
+      const incoming = normalizeState(rawParsed);
       if (cur.lock) incoming.lock = cur.lock;
-      if (baseCfg.role === 'viewer') incoming.theme = cur.theme;
+
+      if (baseCfg.role === 'viewer') {
+        if (!rawParsed.theme && baseCfg.hintTheme) {
+          incoming.theme = baseCfg.hintTheme;
+        }
+        const syncedDark = incoming.darkMode || baseCfg.hintDark;
+        if (syncedDark) {
+          setDarkMode(syncedDark);
+          saveDarkMode(syncedDark);
+        }
+      } else if (incoming.darkMode) {
+        setDarkMode(incoming.darkMode);
+        saveDarkMode(incoming.darkMode);
+      }
 
       const nextCfg: SyncConfig = {
         ...baseCfg,
@@ -598,6 +618,8 @@ export default function App() {
             syncedAt: 0,
             h: '',
             role,
+            ...(connectParsed.hintTheme ? { hintTheme: connectParsed.hintTheme } : {}),
+            ...(connectParsed.hintDark ? { hintDark: connectParsed.hintDark } : {}),
           };
           clearHash();
           if (res.data) {
@@ -605,6 +627,17 @@ export default function App() {
             setSyncStatus(role === 'viewer' ? 'Connected (view-only live)' : 'Device paired & synced');
             setSyncOk(true);
           } else {
+            if (connectParsed.hintTheme) {
+              setState((prev) => {
+                const next = { ...prev, theme: connectParsed.hintTheme! };
+                persistLocalState(next);
+                return next;
+              });
+            }
+            if (connectParsed.hintDark) {
+              setDarkMode(connectParsed.hintDark);
+              saveDarkMode(connectParsed.hintDark);
+            }
             saveSyncConfig(nextCfg);
             setSyncCfg(nextCfg);
             setSyncStatus(
@@ -1207,11 +1240,30 @@ export default function App() {
     }
   };
 
+  const applyDarkModeSetting = (next: DarkModeSetting) => {
+    setDarkMode(next);
+    saveDarkMode(next);
+    if (!isViewer) {
+      commitState((prev) => ({ ...prev, darkMode: next }));
+    }
+  };
+
+  const handleSelectTheme = (key: ThemeKey) => {
+    if (isViewer) {
+      setState((prev) => {
+        const next = { ...prev, theme: key };
+        persistLocalState(next);
+        return next;
+      });
+    } else {
+      commitState((prev) => ({ ...prev, theme: key }));
+    }
+  };
+
   const cycleDarkMode = () => {
     const order: DarkModeSetting[] = ['light', 'dark', 'system'];
     const next = order[(order.indexOf(darkMode) + 1) % order.length];
-    setDarkMode(next);
-    saveDarkMode(next);
+    applyDarkModeSetting(next);
   };
 
   const isCurrentlyDark =
@@ -1241,9 +1293,9 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-stone-50 dark:bg-slate-950 text-stone-900 dark:text-slate-100 transition-colors">
+    <div className={`min-h-screen overflow-x-clip ${themeConfig.pageBgClass} text-stone-900 dark:text-slate-100 transition-colors`}>
       {/* Top Bar (3-zone contract: Brand — Nav Links — 1 Primary Action) */}
-      <header className="sticky top-0 z-30 border-b border-stone-200 dark:border-slate-800 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md">
+      <header className={`sticky top-0 z-30 border-b backdrop-blur-md ${themeConfig.headerClass}`}>
         <div className="max-w-6xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-4 sm:gap-8">
           <a
             href="#top"
@@ -1361,28 +1413,20 @@ export default function App() {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {/* Accent palette dots */}
-            <div
-              className="flex items-center gap-1.5 px-2 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-800"
-              role="group"
-              aria-label="Accent color theme"
+            {/* Theme & Layout Studio button */}
+            <button
+              type="button"
+              onClick={() => setThemePickerOpen(true)}
+              title="Change theme & data layout style"
+              className="min-h-[40px] px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-800 text-stone-700 dark:text-slate-200 hover:bg-stone-100 dark:hover:bg-slate-800 text-xs font-medium inline-flex items-center gap-2 cursor-pointer whitespace-nowrap"
             >
-              {PALETTES.map((p) => (
-                <button
-                  key={p.key}
-                  type="button"
-                  title={`${p.label} accent`}
-                  aria-label={`${p.label} accent`}
-                  onClick={() => commitState((prev) => ({ ...prev, theme: p.key }))}
-                  className={`w-5 h-5 rounded-full cursor-pointer transition-transform ${
-                    (state.theme || 'forest') === p.key
-                      ? 'ring-2 ring-offset-2 ring-offset-white dark:ring-offset-slate-900 ring-stone-900 dark:ring-slate-100 scale-110'
-                      : 'opacity-80 hover:opacity-100'
-                  }`}
-                  style={{ backgroundColor: p.swatch }}
-                />
-              ))}
-            </div>
+              <span
+                className="w-3 h-3 rounded-full shrink-0 border border-black/15"
+                style={{ backgroundColor: themeConfig.swatch }}
+              />
+              <Palette className="w-3.5 h-3.5 text-stone-500 dark:text-slate-400" />
+              <span>{themeConfig.name}</span>
+            </button>
 
             {/* Light / Dark / System mode button */}
             <button
@@ -1525,100 +1569,110 @@ export default function App() {
         {canShowSection('summary') && (
           <section
             id="sec-summary"
-            className="rounded-2xl bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-800 p-4 sm:p-6"
+            className={`${themeConfig.cardClass} p-4 sm:p-6`}
           >
-            <h2 className="text-lg font-semibold text-stone-900 dark:text-slate-100">Summary</h2>
-
-            <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-              {[
-                { label: 'Total shared', val: money(calc.total + calc.cleanTotal) },
-                { label: 'Expenses', val: money(calc.total) },
-                { label: 'Fuel', val: money(calc.cat.fuel || 0) },
-                { label: `Car cleaning (${calc.cars})`, val: money(calc.cleanTotal) },
-                { label: 'Barakah cash', val: money(calc.kCash) },
-                { label: 'Per person avg', val: calc.n ? money((calc.total + calc.cleanTotal) / calc.n) : money(0) },
-              ].map((stat) => (
-                <div
-                  key={stat.label}
-                  className="rounded-xl bg-stone-50 dark:bg-slate-950 border border-stone-100 dark:border-slate-800/80 p-3"
-                >
-                  <span className="block text-xs text-stone-500 dark:text-slate-400">{stat.label}</span>
-                  <strong className="block mt-1 text-lg sm:text-xl font-bold font-mono-num text-stone-900 dark:text-slate-100">
-                    {stat.val}
-                  </strong>
-                </div>
-              ))}
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <h2 className="text-lg font-semibold text-stone-900 dark:text-slate-100">Summary</h2>
+              {calc.n > 0 && (
+                <span className="text-xs text-stone-500 dark:text-slate-400">
+                  {calc.n} friend{calc.n === 1 ? '' : 's'} · {state.expenses.length} expense
+                  {state.expenses.length === 1 ? '' : 's'}
+                </span>
+              )}
             </div>
+
+            {themeConfig.kpiLayout === 'bento-hero' ? (
+              <div className="mt-4 grid grid-cols-1 lg:grid-cols-12 gap-3">
+                <div className="lg:col-span-5 rounded-2xl bg-[var(--accent)] text-white p-4 sm:p-5 flex flex-col justify-between">
+                  <div>
+                    <span className="text-xs font-medium text-white/80">Total trip spend</span>
+                    <strong className="block mt-1 text-2xl sm:text-3xl font-bold font-mono-num tracking-tight">
+                      {money(calc.total + calc.cleanTotal)}
+                    </strong>
+                  </div>
+                  <div className="mt-4 pt-3 border-t border-white/20 flex items-center justify-between gap-2 text-xs text-white/90 font-mono-num">
+                    <span>Avg / person</span>
+                    <strong>{calc.n ? money((calc.total + calc.cleanTotal) / calc.n) : money(0)}</strong>
+                  </div>
+                </div>
+                <div className="lg:col-span-7 grid grid-cols-2 gap-3">
+                  {[
+                    { label: 'Expenses', val: money(calc.total) },
+                    { label: 'Fuel', val: money(calc.cat.fuel || 0) },
+                    { label: `Car cleaning (${calc.cars})`, val: money(calc.cleanTotal) },
+                    { label: 'Barakah cash', val: money(calc.kCash) },
+                  ].map((stat) => (
+                    <div key={stat.label} className={`${themeConfig.subCardClass} p-3 min-w-0`}>
+                      <span className="block text-xs text-stone-500 dark:text-slate-400 truncate">
+                        {stat.label}
+                      </span>
+                      <strong className="block mt-1 text-base sm:text-lg font-bold font-mono-num text-stone-900 dark:text-slate-100 truncate">
+                        {stat.val}
+                      </strong>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : themeConfig.kpiLayout === 'strip-2row' ? (
+              <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 border border-stone-200 dark:border-slate-800 rounded-xl overflow-hidden bg-stone-50/50 dark:bg-slate-950/60">
+                {[
+                  { label: 'Total shared', val: money(calc.total + calc.cleanTotal) },
+                  { label: 'Expenses', val: money(calc.total) },
+                  { label: 'Fuel', val: money(calc.cat.fuel || 0) },
+                  { label: `Cleaning (${calc.cars})`, val: money(calc.cleanTotal) },
+                  { label: 'Barakah cash', val: money(calc.kCash) },
+                  { label: 'Per person', val: calc.n ? money((calc.total + calc.cleanTotal) / calc.n) : money(0) },
+                ].map((stat) => (
+                  <div
+                    key={stat.label}
+                    className="p-3 border-b border-r border-stone-200/80 dark:border-slate-800/80 last:border-r-0 min-w-0"
+                  >
+                    <span className="block text-[11px] font-medium text-stone-500 dark:text-slate-400 truncate">
+                      {stat.label}
+                    </span>
+                    <strong className="block mt-1 text-base sm:text-lg font-bold font-mono-num text-stone-900 dark:text-slate-100 truncate">
+                      {stat.val}
+                    </strong>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="mt-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+                {[
+                  { label: 'Total shared', val: money(calc.total + calc.cleanTotal) },
+                  { label: 'Expenses', val: money(calc.total) },
+                  { label: 'Fuel', val: money(calc.cat.fuel || 0) },
+                  { label: `Car cleaning (${calc.cars})`, val: money(calc.cleanTotal) },
+                  { label: 'Barakah cash', val: money(calc.kCash) },
+                  { label: 'Per person avg', val: calc.n ? money((calc.total + calc.cleanTotal) / calc.n) : money(0) },
+                ].map((stat) => (
+                  <div
+                    key={stat.label}
+                    className={`${themeConfig.subCardClass} p-3 min-w-0`}
+                  >
+                    <span className="block text-xs text-stone-500 dark:text-slate-400 truncate">{stat.label}</span>
+                    <strong className="block mt-1 text-lg sm:text-xl font-bold font-mono-num text-stone-900 dark:text-slate-100 truncate">
+                      {stat.val}
+                    </strong>
+                  </div>
+                ))}
+              </div>
+            )}
 
             <CategoryPieChart
               catTotals={calc.cat}
               totalExpenses={calc.total}
               currency={state.trip.cur}
+              variant={themeConfig.chartVariant}
             />
 
-            {calc.n > 0 && (
-              <div className="mt-5 overflow-x-auto -mx-4 sm:mx-0 px-4 sm:px-0">
-                <table className="w-full text-sm border-collapse min-w-[600px]">
-                  <thead>
-                    <tr className="border-b border-stone-200 dark:border-slate-800 text-xs text-stone-500 dark:text-slate-400">
-                      <th className="py-2.5 px-2 text-left font-semibold">Person</th>
-                      <th className="py-2.5 px-2 text-right font-semibold">In Barakah</th>
-                      <th className="py-2.5 px-2 text-right font-semibold">Out of pocket</th>
-                      <th className="py-2.5 px-2 text-right font-semibold">Cleaning in</th>
-                      <th className="py-2.5 px-2 text-right font-semibold">Fair share</th>
-                      <th className="py-2.5 px-2 text-right font-semibold">Settled</th>
-                      <th className="py-2.5 px-2 text-right font-semibold">Balance</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-stone-100 dark:divide-slate-800/80">
-                    {state.people.map((p) => {
-                      const q = calc.r[p.id] || { paid: 0, in: 0, share: 0, allow: 0, sent: 0, recv: 0, net: 0 };
-                      const settled = q.sent - q.recv;
-                      return (
-                        <tr key={p.id} className="hover:bg-stone-50/70 dark:hover:bg-slate-800/30">
-                          <td className="py-2.5 px-2 text-left font-medium text-stone-900 dark:text-slate-100">
-                            <span className="inline-flex items-center gap-1.5">
-                              {p.car && <Car className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />}
-                              <span>{p.name}</span>
-                            </span>
-                          </td>
-                          <td className="py-2.5 px-2 text-right font-mono-num text-stone-700 dark:text-slate-300">
-                            {money(q.in)}
-                          </td>
-                          <td className="py-2.5 px-2 text-right font-mono-num text-stone-700 dark:text-slate-300">
-                            {money(q.paid - q.in)}
-                          </td>
-                          <td className="py-2.5 px-2 text-right font-mono-num text-stone-700 dark:text-slate-300">
-                            {money(q.allow)}
-                          </td>
-                          <td className="py-2.5 px-2 text-right font-mono-num text-stone-700 dark:text-slate-300">
-                            {money(q.share)}
-                          </td>
-                          <td className="py-2.5 px-2 text-right font-mono-num text-stone-700 dark:text-slate-300">
-                            {money(settled)}
-                          </td>
-                          <td
-                            className={`py-2.5 px-2 text-right font-mono-num font-semibold whitespace-nowrap ${
-                              q.net > 0.005
-                                ? 'text-emerald-700 dark:text-emerald-400'
-                                : q.net < -0.005
-                                  ? 'text-red-600 dark:text-red-400'
-                                  : 'text-stone-500 dark:text-slate-400'
-                            }`}
-                          >
-                            {q.net > 0.005
-                              ? `gets ${money(q.net)}`
-                              : q.net < -0.005
-                                ? `owes ${money(-q.net)}`
-                                : 'all square'}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
+            <SummaryBalances
+              people={state.people}
+              calc={calc}
+              currency={state.trip.cur}
+              variant={themeConfig.balanceVariant}
+              subCardClass={themeConfig.subCardClass}
+            />
           </section>
         )}
 
@@ -1626,7 +1680,7 @@ export default function App() {
         {(canShowSection('xfers') || canShowSection('pays')) && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {canShowSection('xfers') && (
-              <section className="rounded-2xl bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-800 p-4 sm:p-6">
+              <section className={`${themeConfig.cardClass} p-4 sm:p-6`}>
                 <h2 className="text-lg font-semibold text-stone-900 dark:text-slate-100">Who pays whom</h2>
                 <div className="mt-3 space-y-2">
                   {calc.tx.length === 0 ? (
@@ -1637,7 +1691,7 @@ export default function App() {
                     calc.tx.map((tx, idx) => (
                       <div
                         key={`${tx.from}-${tx.to}-${idx}`}
-                        className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-stone-50 dark:bg-slate-950 border border-stone-100 dark:border-slate-800 px-3.5 py-2.5"
+                        className={`flex flex-wrap items-center justify-between gap-2 ${themeConfig.subCardClass} px-3.5 py-2.5`}
                       >
                         <div className="text-sm text-stone-800 dark:text-slate-200 min-w-0">
                           <strong>{personName(tx.from, state.people)}</strong>
@@ -1680,7 +1734,7 @@ export default function App() {
             )}
 
             {canShowSection('pays') && (
-              <section className="rounded-2xl bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-800 p-4 sm:p-6">
+              <section className={`${themeConfig.cardClass} p-4 sm:p-6`}>
                 <h2 className="text-lg font-semibold text-stone-900 dark:text-slate-100">Already paid back</h2>
                 <div className="mt-3 divide-y divide-stone-100 dark:divide-slate-800">
                   {state.payments.length === 0 ? (
@@ -1731,14 +1785,14 @@ export default function App() {
             <section
               id="sec-add-expense"
               ref={expenseFormRef}
-              className="lg:col-span-7 rounded-2xl bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-800 p-4 sm:p-6"
+              className={`lg:col-span-7 ${themeConfig.cardClass} p-4 sm:p-6 min-w-0`}
             >
               <h2 className="text-lg font-semibold text-stone-900 dark:text-slate-100">
                 {editExpId ? 'Edit expense' : 'Add an expense'}
               </h2>
 
               <form onSubmit={(e) => void handleSaveExpense(e)} className="mt-3 space-y-3.5">
-                <div>
+                <div className="min-w-0">
                   <label className="block text-xs font-medium text-stone-500 dark:text-slate-400 mb-1">
                     What was it?
                   </label>
@@ -1747,12 +1801,12 @@ export default function App() {
                     value={expDesc}
                     onChange={(e) => setExpDesc(e.target.value)}
                     placeholder="Food, tent rental, fuel refill…"
-                    className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-3.5 py-2.5 text-sm text-stone-900 dark:text-slate-100 placeholder:text-stone-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+                    className="w-full min-w-0 rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-3.5 py-2.5 text-sm text-stone-900 dark:text-slate-100 placeholder:text-stone-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
                   />
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
+                  <div className="min-w-0">
                     <label className="block text-xs font-medium text-stone-500 dark:text-slate-400 mb-1">
                       Amount ({state.trip.cur})
                     </label>
@@ -1764,17 +1818,17 @@ export default function App() {
                       value={expAmt}
                       onChange={(e) => setExpAmt(e.target.value)}
                       placeholder="0.00"
-                      className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-3.5 py-2.5 text-sm font-mono-num text-stone-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+                      className="w-full min-w-0 rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-3.5 py-2.5 text-sm font-mono-num text-stone-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
                     />
                   </div>
-                  <div>
+                  <div className="min-w-0">
                     <label className="block text-xs font-medium text-stone-500 dark:text-slate-400 mb-1">
                       Paid by
                     </label>
                     <select
                       value={expBy}
                       onChange={(e) => setExpBy(e.target.value)}
-                      className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-3.5 py-2.5 text-sm text-stone-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+                      className="w-full min-w-0 rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-3.5 py-2.5 text-sm text-stone-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
                     >
                       <option value="kitty">Group Barakah (cash in hand)</option>
                       {state.people.map((p) => (
@@ -1787,7 +1841,7 @@ export default function App() {
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
+                  <div className="min-w-0 overflow-hidden">
                     <label className="block text-xs font-medium text-stone-500 dark:text-slate-400 mb-1">
                       Expense date
                     </label>
@@ -1795,17 +1849,17 @@ export default function App() {
                       type="date"
                       value={expDate}
                       onChange={(e) => setExpDate(e.target.value)}
-                      className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-3.5 py-2.5 text-sm text-stone-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+                      className="w-full min-w-0 max-w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-3.5 py-2.5 text-sm text-stone-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
                     />
                   </div>
-                  <div>
+                  <div className="min-w-0">
                     <label className="block text-xs font-medium text-stone-500 dark:text-slate-400 mb-1">
                       Category
                     </label>
                     <select
                       value={expCat}
                       onChange={(e) => setExpCat(e.target.value as ExpenseCategory)}
-                      className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-3.5 py-2.5 text-sm text-stone-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+                      className="w-full min-w-0 rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-3.5 py-2.5 text-sm text-stone-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
                     >
                       <option value="food">Food</option>
                       <option value="rent">Rentals</option>
@@ -1976,7 +2030,7 @@ export default function App() {
               id="sec-friends"
               className={`${
                 isViewer ? 'lg:col-span-12' : 'lg:col-span-5'
-              } rounded-2xl bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-800 p-4 sm:p-6`}
+              } ${themeConfig.cardClass} p-4 sm:p-6 min-w-0`}
             >
               <h2 className="text-lg font-semibold text-stone-900 dark:text-slate-100">Friends</h2>
 
@@ -2008,7 +2062,7 @@ export default function App() {
                     <span>Took their car (gets cleaning allowance)</span>
                   </label>
 
-                  <div>
+                  <div className="min-w-0 overflow-hidden">
                     <label className="block text-xs font-medium text-stone-500 dark:text-slate-400 mb-1">
                       Joined on
                     </label>
@@ -2016,7 +2070,7 @@ export default function App() {
                       type="date"
                       value={friendJoinDate}
                       onChange={(e) => setFriendJoinDate(e.target.value)}
-                      className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-3.5 py-2 text-sm text-stone-900 dark:text-slate-100"
+                      className="w-full min-w-0 max-w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-3.5 py-2 text-sm text-stone-900 dark:text-slate-100"
                     />
                   </div>
                 </form>
@@ -2054,14 +2108,14 @@ export default function App() {
                         </div>
 
                         {!isViewer && (
-                          <div className="flex items-center gap-1">
+                          <div className="flex items-center gap-1 min-w-0 max-w-full">
                             {editingJoinId === p.id ? (
-                              <div className="flex items-center gap-1">
+                              <div className="flex items-center gap-1 min-w-0 max-w-full">
                                 <input
                                   type="date"
                                   value={editingJoinVal}
                                   onChange={(e) => setEditingJoinVal(e.target.value)}
-                                  className="rounded-lg border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-2 py-1 text-xs"
+                                  className="w-[140px] max-w-full min-w-0 rounded-lg border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-2 py-1 text-xs"
                                 />
                                 <button
                                   type="button"
@@ -2076,7 +2130,7 @@ export default function App() {
                                     }
                                     setEditingJoinId(null);
                                   }}
-                                  className="min-h-[32px] px-2 rounded-lg bg-[var(--accent)] text-white text-xs cursor-pointer"
+                                  className="min-h-[32px] px-2 rounded-lg bg-[var(--accent)] text-white text-xs cursor-pointer shrink-0"
                                 >
                                   <Check className="w-3.5 h-3.5" />
                                 </button>
@@ -2131,17 +2185,125 @@ export default function App() {
         {canShowSection('expenses') && (
           <section
             id="sec-expenses"
-            className="rounded-2xl bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-800 p-4 sm:p-6"
+            className={`${themeConfig.cardClass} p-4 sm:p-6`}
           >
             <h2 className="text-lg font-semibold text-stone-900 dark:text-slate-100">Expenses</h2>
 
-            <div className="mt-3 divide-y divide-stone-100 dark:divide-slate-800">
-              {state.expenses.length === 0 ? (
-                <p className="text-sm text-stone-500 dark:text-slate-400 py-2">
-                  No expenses yet. Keep adding as the trip goes.
-                </p>
-              ) : (
-                state.expenses
+            {state.expenses.length === 0 ? (
+              <p className="mt-3 text-sm text-stone-500 dark:text-slate-400 py-2">
+                No expenses yet. Keep adding as the trip goes.
+              </p>
+            ) : themeConfig.expenseFeedVariant === 'timeline' ? (
+              <div className="mt-4 space-y-5">
+                {(() => {
+                  const reversed = state.expenses.slice().reverse();
+                  const groups: { date: string; items: Expense[]; sum: number }[] = [];
+                  for (const exp of reversed) {
+                    const dk = exp.date || state.trip.start || '';
+                    const last = groups[groups.length - 1];
+                    if (last && last.date === dk) {
+                      last.items.push(exp);
+                      last.sum += exp.amt;
+                    } else {
+                      groups.push({ date: dk, items: [exp], sum: exp.amt });
+                    }
+                  }
+                  return groups.map((grp) => (
+                    <div key={grp.date || 'undated'} className="relative pl-4 border-l-2 border-[var(--accent)]/35">
+                      <div className="flex items-center justify-between gap-2 mb-2">
+                        <span className="text-xs font-semibold uppercase tracking-wide text-[var(--accent-ink)] dark:text-[var(--accent)]">
+                          {grp.date ? formatShortDate(grp.date) : 'Trip day'} · {grp.items.length} item
+                          {grp.items.length === 1 ? '' : 's'}
+                        </span>
+                        <span className="text-xs font-mono-num font-semibold text-stone-600 dark:text-slate-300">
+                          {money(grp.sum)}
+                        </span>
+                      </div>
+                      <div className="space-y-2">
+                        {grp.items.map((exp) => {
+                          const shareCount = getParticipants(exp, state.people, state.trip.start).length;
+                          return (
+                            <div
+                              key={exp.id}
+                              className={`${themeConfig.subCardClass} p-3 flex flex-wrap items-center justify-between gap-3`}
+                            >
+                              <div className="flex items-center gap-3 min-w-0 flex-1">
+                                {exp.receipt && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setLightboxExpense(exp)}
+                                    title="View receipt photo"
+                                    className="w-11 h-11 rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-100 dark:bg-slate-800 overflow-hidden shrink-0 flex items-center justify-center cursor-pointer hover:opacity-90 transition-opacity"
+                                  >
+                                    {exp.receipt.thumb ? (
+                                      <img
+                                        src={exp.receipt.thumb}
+                                        alt={`Receipt for ${exp.desc}`}
+                                        className="w-full h-full object-cover"
+                                      />
+                                    ) : (
+                                      <Paperclip className="w-4 h-4 text-stone-500 dark:text-slate-300" />
+                                    )}
+                                  </button>
+                                )}
+                                <div className="min-w-0">
+                                  <p className="font-medium text-sm text-stone-900 dark:text-slate-100 truncate">
+                                    {exp.desc}
+                                  </p>
+                                  <p className="text-xs text-stone-500 dark:text-slate-400 mt-0.5">
+                                    {CATEGORY_LABELS[exp.cat]} · Paid by {personName(exp.by, state.people)} ·{' '}
+                                    {shareCount} sharing
+                                    {exp.receipt?.pending ? ' · Queued for Drive' : ''}
+                                  </p>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-2 shrink-0">
+                                <span className="font-mono-num font-bold text-sm sm:text-base text-stone-900 dark:text-slate-100">
+                                  {money(exp.amt)}
+                                </span>
+                                {exp.receipt && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setLightboxExpense(exp)}
+                                    className="min-h-[36px] px-2.5 py-1 rounded-lg border border-stone-200 dark:border-slate-700 text-xs font-medium text-stone-700 dark:text-slate-200 hover:bg-stone-50 dark:hover:bg-slate-800 inline-flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                                  >
+                                    <Paperclip className="w-3.5 h-3.5" />
+                                    <span className="hidden sm:inline">Receipt</span>
+                                  </button>
+                                )}
+                                {!isViewer && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleEditExpense(exp)}
+                                      aria-label={`Edit ${exp.desc}`}
+                                      className="min-h-[36px] min-w-[36px] inline-flex items-center justify-center rounded-lg border border-stone-200 dark:border-slate-700 text-stone-600 dark:text-slate-300 hover:bg-stone-50 dark:hover:bg-slate-800 cursor-pointer"
+                                    >
+                                      <Edit3 className="w-3.5 h-3.5" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteExpense(exp)}
+                                      aria-label={`Delete ${exp.desc}`}
+                                      className="min-h-[36px] min-w-[36px] inline-flex items-center justify-center rounded-lg border border-stone-200 dark:border-slate-700 text-stone-500 hover:text-red-600 dark:hover:text-red-400 cursor-pointer"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ));
+                })()}
+              </div>
+            ) : (
+              <div className="mt-3 divide-y divide-stone-100 dark:divide-slate-800">
+                {state.expenses
                   .slice()
                   .reverse()
                   .map((exp) => {
@@ -2219,29 +2381,29 @@ export default function App() {
                         </div>
                       </div>
                     );
-                  })
-              )}
-            </div>
+                  })}
+              </div>
+            )}
           </section>
         )}
 
         {/* BARAKAH (MONEY COLLECTED) */}
         {canShowSection('barakah') && (
-          <section className="rounded-2xl bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-800 p-4 sm:p-6">
+          <section className={`${themeConfig.cardClass} p-4 sm:p-6`}>
             <h2 className="text-lg font-semibold text-stone-900 dark:text-slate-100">
               Barakah (money collected)
             </h2>
 
             {!isViewer && (
               <form onSubmit={handleAddContrib} className="mt-3 grid grid-cols-1 sm:grid-cols-12 gap-3 items-end">
-                <div className="sm:col-span-5">
+                <div className="sm:col-span-5 min-w-0">
                   <label className="block text-xs font-medium text-stone-500 dark:text-slate-400 mb-1">
                     Who paid in
                   </label>
                   <select
                     value={contribWho}
                     onChange={(e) => setContribWho(e.target.value)}
-                    className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-3.5 py-2.5 text-sm text-stone-900 dark:text-slate-100"
+                    className="w-full min-w-0 rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-3.5 py-2.5 text-sm text-stone-900 dark:text-slate-100"
                   >
                     {state.people.map((p) => (
                       <option key={p.id} value={p.id}>
@@ -2250,7 +2412,7 @@ export default function App() {
                     ))}
                   </select>
                 </div>
-                <div className="sm:col-span-3">
+                <div className="sm:col-span-3 min-w-0">
                   <label className="block text-xs font-medium text-stone-500 dark:text-slate-400 mb-1">
                     Amount
                   </label>
@@ -2262,10 +2424,10 @@ export default function App() {
                     value={contribAmt}
                     onChange={(e) => setContribAmt(e.target.value)}
                     placeholder="0.00"
-                    className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-3.5 py-2.5 text-sm font-mono-num text-stone-900 dark:text-slate-100"
+                    className="w-full min-w-0 rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-3.5 py-2.5 text-sm font-mono-num text-stone-900 dark:text-slate-100"
                   />
                 </div>
-                <div className="sm:col-span-2">
+                <div className="sm:col-span-2 min-w-0 overflow-hidden">
                   <label className="block text-xs font-medium text-stone-500 dark:text-slate-400 mb-1">
                     Date
                   </label>
@@ -2273,10 +2435,10 @@ export default function App() {
                     type="date"
                     value={contribDate}
                     onChange={(e) => setContribDate(e.target.value)}
-                    className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-3 py-2.5 text-sm text-stone-900 dark:text-slate-100"
+                    className="w-full min-w-0 max-w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-3 py-2.5 text-sm text-stone-900 dark:text-slate-100"
                   />
                 </div>
-                <div className="sm:col-span-2">
+                <div className="sm:col-span-2 min-w-0">
                   <button
                     type="submit"
                     className="w-full min-h-[44px] px-4 py-2.5 rounded-xl bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-sm font-semibold cursor-pointer whitespace-nowrap"
@@ -2298,15 +2460,15 @@ export default function App() {
             )}
 
             <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div className="rounded-xl bg-stone-50 dark:bg-slate-950 border border-stone-100 dark:border-slate-800/80 p-3">
+              <div className={`${themeConfig.subCardClass} p-3`}>
                 <span className="block text-xs text-stone-500 dark:text-slate-400">Collected</span>
                 <strong className="block mt-1 text-lg font-bold font-mono-num">{money(calc.kIn)}</strong>
               </div>
-              <div className="rounded-xl bg-stone-50 dark:bg-slate-950 border border-stone-100 dark:border-slate-800/80 p-3">
+              <div className={`${themeConfig.subCardClass} p-3`}>
                 <span className="block text-xs text-stone-500 dark:text-slate-400">Spent from Barakah</span>
                 <strong className="block mt-1 text-lg font-bold font-mono-num">{money(calc.kExp)}</strong>
               </div>
-              <div className="rounded-xl bg-stone-50 dark:bg-slate-950 border border-stone-100 dark:border-slate-800/80 p-3">
+              <div className={`${themeConfig.subCardClass} p-3`}>
                 <span className="block text-xs text-stone-500 dark:text-slate-400">Cash in hand</span>
                 <strong
                   className={`block mt-1 text-lg font-bold font-mono-num ${
@@ -2364,11 +2526,11 @@ export default function App() {
 
         {/* TRIP SETTINGS */}
         {canShowSection('settings') && (
-          <section className="rounded-2xl bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-800 p-4 sm:p-6">
+          <section className={`${themeConfig.cardClass} p-4 sm:p-6`}>
             <h2 className="text-lg font-semibold text-stone-900 dark:text-slate-100">Trip settings</h2>
 
             <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-              <div>
+              <div className="min-w-0">
                 <label className="block text-xs font-medium text-stone-500 dark:text-slate-400 mb-1">
                   Trip name
                 </label>
@@ -2379,10 +2541,10 @@ export default function App() {
                   onChange={(e) =>
                     commitState((prev) => ({ ...prev, trip: { ...prev.trip, name: e.target.value } }))
                   }
-                  className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-3 py-2 text-sm disabled:opacity-60"
+                  className="w-full min-w-0 rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-3 py-2 text-sm disabled:opacity-60"
                 />
               </div>
-              <div>
+              <div className="min-w-0">
                 <label className="block text-xs font-medium text-stone-500 dark:text-slate-400 mb-1">
                   Logo emoji
                 </label>
@@ -2394,10 +2556,10 @@ export default function App() {
                   onChange={(e) =>
                     commitState((prev) => ({ ...prev, trip: { ...prev.trip, emoji: e.target.value } }))
                   }
-                  className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-3 py-2 text-sm disabled:opacity-60"
+                  className="w-full min-w-0 rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-3 py-2 text-sm disabled:opacity-60"
                 />
               </div>
-              <div>
+              <div className="min-w-0">
                 <label className="block text-xs font-medium text-stone-500 dark:text-slate-400 mb-1">
                   Currency
                 </label>
@@ -2409,10 +2571,10 @@ export default function App() {
                   onChange={(e) =>
                     commitState((prev) => ({ ...prev, trip: { ...prev.trip, cur: e.target.value } }))
                   }
-                  className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-3 py-2 text-sm disabled:opacity-60"
+                  className="w-full min-w-0 rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-3 py-2 text-sm disabled:opacity-60"
                 />
               </div>
-              <div>
+              <div className="min-w-0 overflow-hidden">
                 <label className="block text-xs font-medium text-stone-500 dark:text-slate-400 mb-1">
                   Trip start date
                 </label>
@@ -2423,10 +2585,10 @@ export default function App() {
                   onChange={(e) =>
                     commitState((prev) => ({ ...prev, trip: { ...prev.trip, start: e.target.value } }))
                   }
-                  className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-3 py-2 text-sm disabled:opacity-60"
+                  className="w-full min-w-0 max-w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-3 py-2 text-sm disabled:opacity-60"
                 />
               </div>
-              <div>
+              <div className="min-w-0">
                 <label className="block text-xs font-medium text-stone-500 dark:text-slate-400 mb-1">
                   Cleaning per car
                 </label>
@@ -2440,7 +2602,7 @@ export default function App() {
                     const v = e.target.value === '' ? 0 : parseFloat(e.target.value);
                     commitState((prev) => ({ ...prev, trip: { ...prev.trip, clean: v } }));
                   }}
-                  className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-3 py-2 text-sm font-mono-num disabled:opacity-60"
+                  className="w-full min-w-0 rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950 px-3 py-2 text-sm font-mono-num disabled:opacity-60"
                 />
               </div>
             </div>
@@ -2538,7 +2700,7 @@ export default function App() {
 
         {/* BACKUP & RESTORE LINK (Admin) */}
         {!isViewer && (
-          <section className="rounded-2xl bg-white dark:bg-slate-900 border border-stone-200 dark:border-slate-800 p-4 sm:p-6">
+          <section className={`${themeConfig.cardClass} p-4 sm:p-6`}>
             <h2 className="text-lg font-semibold text-stone-900 dark:text-slate-100">Quick backup &amp; transfer</h2>
             <p className="text-sm text-stone-500 dark:text-slate-400 mt-1">
               {state.lastBackup
@@ -2593,6 +2755,9 @@ export default function App() {
           <AdminSharePanel
             cfg={syncCfg}
             users={users}
+            theme={activeTheme}
+            darkMode={darkMode}
+            cardClass={themeConfig.cardClass}
             onUsersChange={setUsers}
             onOpenQr={setQrPayload}
           />
@@ -2607,6 +2772,7 @@ export default function App() {
             conflict={conflict}
             busy={syncBusy}
             pendingReceipts={pendingReceiptCount}
+            cardClass={themeConfig.cardClass}
             onConnect={handleDriveConnect}
             onSyncNow={runSync}
             onLoadFromDrive={handleLoadFromDrive}
@@ -2619,6 +2785,15 @@ export default function App() {
       </main>
 
       {/* Modals */}
+      <ThemePickerModal
+        open={themePickerOpen}
+        activeTheme={activeTheme}
+        darkMode={darkMode}
+        onSelectTheme={handleSelectTheme}
+        onSelectDarkMode={applyDarkModeSetting}
+        onClose={() => setThemePickerOpen(false)}
+      />
+
       <QrShareModal payload={qrPayload} onClose={() => setQrPayload(null)} />
 
       <ReceiptLightbox

@@ -9,7 +9,14 @@ export type SectionKey =
 
 export type ExpenseCategory = 'food' | 'rent' | 'fuel' | 'other';
 
-export type PaletteKey = 'forest' | 'ocean' | 'sunset' | 'indigo';
+export type ThemeKey =
+  | 'trailhead'
+  | 'bento'
+  | 'fintech'
+  | 'horizon'
+  | 'campfire'
+  | 'alpine';
+
 export type DarkModeSetting = 'light' | 'dark' | 'system';
 
 export interface TripSettings {
@@ -29,18 +36,18 @@ export interface Person {
 }
 
 export interface ReceiptMeta {
-  id?: string;       // Google Drive File ID once uploaded
+  id?: string;
   name: string;
-  url?: string;      // Google Drive File URL
-  thumb?: string;    // Compact JPEG data URL thumbnail (~3-6KB)
-  pending?: boolean; // True when saved locally in IndexedDB awaiting Drive upload
+  url?: string;
+  thumb?: string;
+  pending?: boolean;
 }
 
 export interface Expense {
   id: string;
   desc: string;
   amt: number;
-  by: string; // person id or 'kitty'
+  by: string;
   date: string;
   cat: ExpenseCategory;
   split: string[] | null;
@@ -101,7 +108,8 @@ export interface TripState {
   expenses: Expense[];
   payments: Payment[];
   contribs: Contribution[];
-  theme: PaletteKey | '';
+  theme: ThemeKey | '';
+  darkMode?: DarkModeSetting;
   lock?: PinLock;
   lastBackup?: number;
   _calc?: CalcResult;
@@ -114,6 +122,8 @@ export interface SyncConfig {
   syncedAt: number;
   h: string;
   role?: 'admin' | 'viewer';
+  hintTheme?: ThemeKey;
+  hintDark?: DarkModeSetting;
 }
 
 export interface ViewerUser {
