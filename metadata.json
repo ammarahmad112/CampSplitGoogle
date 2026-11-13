@@ -1,0 +1,6 @@
+{
+  "name": "Camp Split",
+  "description": "Fair camping expense splitter with dark mode, multi-device Google Drive sync, receipt photo uploads, and QR code link sharing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
