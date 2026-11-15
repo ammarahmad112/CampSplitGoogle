@@ -25,13 +25,13 @@ function loadImage(file: File): Promise<HTMLImageElement> {
 export async function processLogoImage(file: File): Promise<string> {
   const img = await loadImage(file);
   const c = document.createElement('canvas');
-  c.width = 160;
-  c.height = 160;
+  c.width = 192;
+  c.height = 192;
   const ctx = c.getContext('2d');
   if (!ctx) throw new Error('Canvas unavailable');
   const s = Math.min(img.width, img.height);
-  ctx.drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, 160, 160);
-  return c.toDataURL('image/jpeg', 0.85);
+  ctx.drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, 192, 192);
+  return c.toDataURL('image/png');
 }
 
 export async function processReceiptPhoto(file: File, expId: string): Promise<ProcessedReceipt> {

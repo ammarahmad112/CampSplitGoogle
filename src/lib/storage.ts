@@ -94,11 +94,20 @@ export async function idbListReceipts(): Promise<LocalReceiptBlob[]> {
   }
 }
 
+export function safeJsonParse(raw: string): unknown {
+  return JSON.parse(raw, (key, value) => {
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+      return undefined;
+    }
+    return value;
+  });
+}
+
 export function loadLocalState(): { state: TripState; hadLocal: boolean } {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
-      return { state: normalizeState(JSON.parse(raw)), hadLocal: true };
+      return { state: normalizeState(safeJsonParse(raw)), hadLocal: true };
     }
   } catch {
     return { state: blankState(), hadLocal: true };
@@ -111,7 +120,18 @@ export function persistLocalState(state: TripState): void {
   try {
     localStorage.setItem(STORAGE_KEY, json);
   } catch {
-    // ignore quota errors
+    // Quota fallback: strip inline receipt thumbnails in localStorage while keeping full state in IndexedDB
+    try {
+      const compact: TripState = {
+        ...state,
+        expenses: state.expenses.map((e) =>
+          e.receipt ? { ...e, receipt: { ...e.receipt, thumb: undefined } } : e
+        ),
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(compact));
+    } catch {
+      // ignore if storage is completely blocked
+    }
   }
   void idbSetState(json);
 }
@@ -201,7 +221,8 @@ export async function unpackBackup(token: string): Promise<unknown> {
 let lastIconKey = '';
 export function updateDynamicFavicon(state: TripState, palette: ThemeKey | ''): void {
   const t = state.trip;
-  const k = `${t.img || t.emoji}|${palette}`;
+  const isDark = document.documentElement.classList.contains('dark');
+  const k = `${t.img || t.emoji}|${palette}|${isDark ? 'd' : 'l'}`;
   if (k === lastIconKey) return;
   lastIconKey = k;
 
@@ -211,40 +232,41 @@ export function updateDynamicFavicon(state: TripState, palette: ThemeKey | ''): 
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
 
-  const cs = getComputedStyle(document.documentElement);
-  const acc = cs.getPropertyValue('--accent').trim() || '#15803d';
-  const grad = ctx.createLinearGradient(0, 0, 180, 180);
-  grad.addColorStop(0, acc);
-  grad.addColorStop(1, '#d97706');
-
   ctx.beginPath();
-  if (ctx.roundRect) ctx.roundRect(0, 0, 180, 180, 44);
+  if (ctx.roundRect) ctx.roundRect(0, 0, 180, 180, 40);
   else ctx.rect(0, 0, 180, 180);
   ctx.clip();
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, 180, 180);
 
   const commit = () => {
-    ['icon', 'apple-touch-icon'].forEach((rel) => {
-      let link = document.querySelector(`link[rel="${rel}"]`) as HTMLLinkElement | null;
-      if (!link) {
-        link = document.createElement('link');
-        link.rel = rel;
-        document.head.appendChild(link);
-      }
-      link.href = canvas.toDataURL('image/png');
+    const href = canvas.toDataURL('image/png');
+    (['icon', 'shortcut icon', 'apple-touch-icon'] as const).forEach((rel) => {
+      document.querySelectorAll(`link[rel="${rel}"]`).forEach((el) => el.remove());
+      const link = document.createElement('link');
+      link.rel = rel;
+      link.type = 'image/png';
+      link.href = href;
+      document.head.appendChild(link);
     });
   };
 
   if (t.img) {
     const img = new Image();
     img.onload = () => {
+      ctx.clearRect(0, 0, 180, 180);
       const m = Math.min(img.width, img.height);
       ctx.drawImage(img, (img.width - m) / 2, (img.height - m) / 2, m, m, 0, 0, 180, 180);
       commit();
     };
     img.src = t.img;
   } else {
+    const cs = getComputedStyle(document.documentElement);
+    const acc = cs.getPropertyValue('--accent').trim() || '#15803d';
+    const grad = ctx.createLinearGradient(0, 0, 180, 180);
+    grad.addColorStop(0, acc);
+    grad.addColorStop(1, '#d97706');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 180, 180);
+
     ctx.font = '100px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';

@@ -19,6 +19,7 @@ import {
   QrCode,
   RefreshCw,
   RotateCcw,
+  ScanLine,
   Share2,
   Sun,
   Trash2,
@@ -67,6 +68,7 @@ import {
   loadSyncConfig,
   packBackup,
   persistLocalState,
+  safeJsonParse,
   saveDarkMode,
   saveSyncConfig,
   unpackBackup,
@@ -79,8 +81,10 @@ import {
   hashPayload,
   parseHashConnectLink,
 } from './lib/driveSync';
+import type { ParsedHashLink } from './lib/driveSync';
 import { processLogoImage, processReceiptPhoto } from './lib/imageUtils';
 import { QrShareModal } from './components/QrShareModal';
+import { QrRestoreModal } from './components/QrRestoreModal';
 import { ReceiptLightbox } from './components/ReceiptLightbox';
 import { PinLockModal } from './components/PinLockModal';
 import { AdminSharePanel } from './components/AdminSharePanel';
@@ -145,6 +149,7 @@ export default function App() {
 
   // Modals
   const [qrPayload, setQrPayload] = useState<QrSharePayload | null>(null);
+  const [qrRestoreOpen, setQrRestoreOpen] = useState(false);
   const [lightboxExpense, setLightboxExpense] = useState<Expense | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
   const [themePickerOpen, setThemePickerOpen] = useState(false);
@@ -245,7 +250,7 @@ export default function App() {
     void idbGetState().then((json) => {
       if (!json) return;
       try {
-        const restored = normalizeState(JSON.parse(json));
+        const restored = normalizeState(safeJsonParse(json));
         setState(restored);
         if (restored.lock) setLockMode('unlock');
       } catch {
@@ -381,7 +386,7 @@ export default function App() {
   const applyRemoteState = useCallback(
     (rawJson: string, updatedTs: number, baseCfg: SyncConfig) => {
       const cur = stateRef.current;
-      const rawParsed = JSON.parse(rawJson) as Record<string, unknown>;
+      const rawParsed = safeJsonParse(rawJson) as Record<string, unknown>;
       const incoming = normalizeState(rawParsed);
       if (cur.lock) incoming.lock = cur.lock;
 
@@ -596,17 +601,8 @@ export default function App() {
     return () => document.removeEventListener('visibilitychange', onVis);
   }, []);
 
-  // Handle incoming hash links: #j= / #join= (view-only), #p= / #pair= (admin device pair), #restore=
-  useEffect(() => {
-    const hash = window.location.hash;
-    if (!hash) return;
-
-    const clearHash = () => {
-      window.history.replaceState(null, '', window.location.pathname + window.location.search);
-    };
-
-    const connectParsed = parseHashConnectLink(hash);
-    if (connectParsed) {
+  const connectFromParsedLink = useCallback(
+    (connectParsed: ParsedHashLink, onFinish?: () => void) => {
       const performConnect = async () => {
         try {
           const res = await callDriveApi(connectParsed.url, connectParsed.code, 'read');
@@ -621,7 +617,7 @@ export default function App() {
             ...(connectParsed.hintTheme ? { hintTheme: connectParsed.hintTheme } : {}),
             ...(connectParsed.hintDark ? { hintDark: connectParsed.hintDark } : {}),
           };
-          clearHash();
+          onFinish?.();
           if (res.data) {
             applyRemoteState(res.data, res.updated || Date.now(), nextCfg);
             setSyncStatus(role === 'viewer' ? 'Connected (view-only live)' : 'Device paired & synced');
@@ -651,7 +647,7 @@ export default function App() {
             void loadUsers(nextCfg);
           }
         } catch {
-          clearHash();
+          onFinish?.();
           setSyncStatus('That link is invalid or was revoked.');
           setSyncOk(false);
         }
@@ -682,37 +678,77 @@ export default function App() {
       } else {
         void performConnect();
       }
+    },
+    [applyRemoteState, loadUsers]
+  );
+
+  const promptRestoreBackup = useCallback(
+    (raw: unknown, sourceLabel: 'file' | 'QR code' | 'link', onAfterApply?: () => void) => {
+      const parsed = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null;
+      if (!parsed || !Array.isArray(parsed.people) || !Array.isArray(parsed.expenses)) {
+        throw new Error('Invalid backup structure');
+      }
+      const restored = normalizeState(parsed);
+      delete restored._calc;
+      delete restored._show;
+      if (stateRef.current.lock) restored.lock = stateRef.current.lock;
+      else delete restored.lock;
+      if (!restored.trip.img && stateRef.current.trip.img) {
+        restored.trip.img = stateRef.current.trip.img;
+      }
+
+      const summary = `${restored.people.length} friend${restored.people.length === 1 ? '' : 's'}, ${
+        restored.expenses.length
+      } expense${restored.expenses.length === 1 ? '' : 's'}, ${restored.contribs.length} Barakah ${
+        restored.contribs.length === 1 ? 'entry' : 'entries'
+      }`;
+
+      setConfirmDialog({
+        title: `Restore “${restored.trip.name}” from ${sourceLabel}?`,
+        message: `Found ${summary}. Your existing PIN lock, uploaded logo/favicon (unless included in the backup), and Drive sync connection remain safe.`,
+        confirmLabel: 'Restore trip',
+        onConfirm: () => {
+          if (restored.darkMode) {
+            setDarkMode(restored.darkMode);
+            saveDarkMode(restored.darkMode);
+          }
+          onAfterApply?.();
+          commitState(restored);
+          setConfirmDialog(null);
+          flash(setBackupFeedback, `Trip restored from ${sourceLabel}.`, true);
+          flash(setSettingsFeedback, `Trip restored from ${sourceLabel}.`, true);
+        },
+      });
+    },
+    [commitState]
+  );
+
+  // Handle incoming hash links: #j= / #join= (view-only), #p= / #pair= (admin device pair), #restore=
+  useEffect(() => {
+    const hash = window.location.hash;
+    if (!hash) return;
+
+    const clearHash = () => {
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    };
+
+    const connectParsed = parseHashConnectLink(hash);
+    if (connectParsed) {
+      connectFromParsedLink(connectParsed, clearHash);
       return;
     }
 
     if (hash.startsWith('#restore=') && !isViewer) {
       void unpackBackup(hash.slice(9))
         .then((raw) => {
-          const parsed = raw as Record<string, unknown>;
-          if (!parsed || !Array.isArray(parsed.people) || !Array.isArray(parsed.expenses)) {
-            throw new Error('Invalid restore link');
-          }
-          setConfirmDialog({
-            title: 'Restore trip from link?',
-            message: 'This replaces the trip currently saved on this device with the backup in the link.',
-            confirmLabel: 'Restore trip',
-            onConfirm: () => {
-              const restored = normalizeState(parsed);
-              if (stateRef.current.lock) restored.lock = stateRef.current.lock;
-              if (stateRef.current.trip.img) restored.trip.img = stateRef.current.trip.img;
-              clearHash();
-              commitState(restored);
-              setConfirmDialog(null);
-              setBackupFeedback({ text: 'Trip restored from link.', ok: true });
-            },
-          });
+          promptRestoreBackup(raw, 'link', clearHash);
         })
         .catch(() => {
           clearHash();
           setBackupFeedback({ text: 'That restore link could not be read.', ok: false });
         });
     }
-  }, [applyRemoteState, commitState, isViewer, loadUsers]);
+  }, [connectFromParsedLink, isViewer, promptRestoreBackup]);
 
   // Helper to show transient feedback
   const flash = (
@@ -1128,18 +1164,20 @@ export default function App() {
 
   // Backup & Restore handlers
   const handleExportJson = () => {
-    const updated = { ...state, lastBackup: Date.now() };
+    const updated = { ...state, darkMode, lastBackup: Date.now() };
     commitState(updated);
     const blob = new Blob([JSON.stringify(updated)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
+    a.href = url;
     a.download = `camp-split-backup-${todayStr()}.json`;
     a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
     flash(setSettingsFeedback, 'Backup file downloaded.', true);
   };
 
   const handleShareBackupFile = async () => {
-    const updated = { ...state, lastBackup: Date.now() };
+    const updated = { ...state, darkMode, lastBackup: Date.now() };
     commitState(updated);
     const file = new File([JSON.stringify(updated)], `camp-split-backup-${todayStr()}.json`, {
       type: 'application/json',
@@ -1153,16 +1191,18 @@ export default function App() {
         if (err instanceof Error && err.name === 'AbortError') return;
       }
     }
+    const url = URL.createObjectURL(file);
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(file);
+    a.href = url;
     a.download = file.name;
     a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
     flash(setBackupFeedback, 'Backup downloaded. Save it to Drive or send via WhatsApp.', true);
   };
 
   const handleCopyRestoreLink = async (openQr = false) => {
     try {
-      const clone: TripState = JSON.parse(JSON.stringify(state));
+      const clone: TripState = safeJsonParse(JSON.stringify(state)) as TripState;
       delete clone.lock;
       clone.trip.img = '';
       // Strip embedded receipt thumbnails from restore link to keep URL short
@@ -1175,13 +1215,21 @@ export default function App() {
       if (openQr) {
         setQrPayload({
           title: 'Restore backup link',
-          subtitle: 'Scan or save this link to transfer your trip offline',
+          subtitle: 'Scan or save this QR code to transfer your trip offline',
           url,
         });
         return;
       }
-      await navigator.clipboard.writeText(url);
-      flash(setBackupFeedback, 'Restore link copied.', true);
+      try {
+        await navigator.clipboard.writeText(url);
+        flash(setBackupFeedback, 'Restore link copied.', true);
+      } catch {
+        setQrPayload({
+          title: 'Restore backup link',
+          subtitle: 'Copy or scan this restore link',
+          url,
+        });
+      }
     } catch {
       flash(setBackupFeedback, 'Use “Send backup file” for trips with lots of data.', false);
     }
@@ -1191,15 +1239,64 @@ export default function App() {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
+    if (file.size > 10 * 1024 * 1024) {
+      flash(setSettingsFeedback, 'Backup file is too large (max 10 MB).', false);
+      flash(setBackupFeedback, 'Backup file is too large (max 10 MB).', false);
+      return;
+    }
     try {
       const text = await file.text();
-      const restored = normalizeState(JSON.parse(text));
-      if (state.lock) restored.lock = state.lock;
-      commitState(restored);
-      flash(setSettingsFeedback, 'Backup restored.', true);
+      const parsed = safeJsonParse(text);
+      promptRestoreBackup(parsed, 'file');
     } catch {
       flash(setSettingsFeedback, 'That backup file could not be read.', false);
+      flash(setBackupFeedback, 'That backup file could not be read.', false);
     }
+  };
+
+  const handleScannedRestoreText = async (rawText: string): Promise<string | null> => {
+    const trimmed = rawText.trim();
+    if (!trimmed) return 'Nothing found in QR code or link.';
+
+    // 1. Check for #restore= in a URL or bare token
+    const restoreIdx = trimmed.indexOf('#restore=');
+    if (restoreIdx >= 0 || trimmed.startsWith('restore=')) {
+      const token =
+        restoreIdx >= 0 ? trimmed.slice(restoreIdx + 9) : trimmed.slice(8);
+      try {
+        const raw = await unpackBackup(token.trim());
+        promptRestoreBackup(raw, 'QR code');
+        setQrRestoreOpen(false);
+        return null;
+      } catch {
+        return 'This Restore QR code or link is damaged or incomplete.';
+      }
+    }
+
+    // 2. Check for Drive share/pair QR link (#j=, #join=, #p=, #pair=)
+    const hashPos = trimmed.indexOf('#');
+    if (hashPos >= 0) {
+      const parsedLink = parseHashConnectLink(trimmed.slice(hashPos));
+      if (parsedLink) {
+        setQrRestoreOpen(false);
+        connectFromParsedLink(parsedLink);
+        return null;
+      }
+    }
+
+    // 3. Check for raw JSON backup text
+    if (trimmed.startsWith('{')) {
+      try {
+        const parsed = safeJsonParse(trimmed);
+        promptRestoreBackup(parsed, 'QR code');
+        setQrRestoreOpen(false);
+        return null;
+      } catch {
+        return 'QR JSON data is not a valid Camp Split backup.';
+      }
+    }
+
+    return 'This QR code is not a Camp Split restore or sync link.';
   };
 
   const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1209,7 +1306,7 @@ export default function App() {
     try {
       const img = await processLogoImage(file);
       commitState((prev) => ({ ...prev, trip: { ...prev.trip, img } }));
-      flash(setSettingsFeedback, 'Logo updated.', true);
+      flash(setSettingsFeedback, 'Logo & browser favicon updated automatically.', true);
     } catch {
       flash(setSettingsFeedback, 'Could not process logo image.', false);
     }
@@ -2623,23 +2720,37 @@ export default function App() {
                   onChange={(e) => void handleImportBackup(e)}
                   className="hidden"
                 />
-                <button
-                  type="button"
-                  onClick={() => logoInputRef.current?.click()}
-                  className="min-h-[38px] px-3 py-1.5 rounded-xl border border-stone-200 dark:border-slate-700 text-xs font-medium inline-flex items-center gap-1.5 hover:bg-stone-50 dark:hover:bg-slate-800 cursor-pointer"
-                >
-                  <Upload className="w-3.5 h-3.5" />
-                  <span>Upload logo</span>
-                </button>
-                {state.trip.img && (
+                <div className="flex flex-wrap items-center gap-2">
+                  {state.trip.img && (
+                    <div className="inline-flex items-center gap-2 pr-2 py-1 pl-1 rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-950">
+                      <img
+                        src={state.trip.img}
+                        alt="Trip logo and favicon"
+                        className="w-7 h-7 rounded-lg object-cover"
+                      />
+                      <span className="text-[11px] font-medium text-stone-600 dark:text-slate-300">
+                        Logo &amp; tab icon synced
+                      </span>
+                    </div>
+                  )}
                   <button
                     type="button"
-                    onClick={() => commitState((prev) => ({ ...prev, trip: { ...prev.trip, img: '' } }))}
-                    className="min-h-[38px] px-3 py-1.5 rounded-xl border border-stone-200 dark:border-slate-700 text-xs font-medium hover:bg-stone-50 dark:hover:bg-slate-800 cursor-pointer"
+                    onClick={() => logoInputRef.current?.click()}
+                    className="min-h-[38px] px-3 py-1.5 rounded-xl border border-stone-200 dark:border-slate-700 text-xs font-medium inline-flex items-center gap-1.5 hover:bg-stone-50 dark:hover:bg-slate-800 cursor-pointer"
                   >
-                    Use emoji logo
+                    <Upload className="w-3.5 h-3.5" />
+                    <span>{state.trip.img ? 'Change logo & favicon' : 'Upload logo (sets favicon)'}</span>
                   </button>
-                )}
+                  {state.trip.img && (
+                    <button
+                      type="button"
+                      onClick={() => commitState((prev) => ({ ...prev, trip: { ...prev.trip, img: '' } }))}
+                      className="min-h-[38px] px-3 py-1.5 rounded-xl border border-stone-200 dark:border-slate-700 text-xs font-medium hover:bg-stone-50 dark:hover:bg-slate-800 cursor-pointer"
+                    >
+                      Use emoji logo
+                    </button>
+                  )}
+                </div>
                 <button
                   type="button"
                   onClick={handleExportJson}
@@ -2738,6 +2849,28 @@ export default function App() {
                 <span>Restore QR code</span>
               </button>
             </div>
+
+            <div className="mt-4 pt-3.5 border-t border-stone-100 dark:border-slate-800/80 flex flex-wrap items-center gap-2">
+              <span className="text-xs font-medium text-stone-500 dark:text-slate-400 mr-1">
+                Restore saved data:
+              </span>
+              <button
+                type="button"
+                onClick={() => setQrRestoreOpen(true)}
+                className="min-h-[40px] px-4 py-2 rounded-xl bg-[var(--accent-soft)] text-[var(--accent-ink)] border border-[var(--accent)]/30 hover:opacity-90 text-xs sm:text-sm font-semibold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+              >
+                <ScanLine className="w-4 h-4" />
+                <span>Scan / restore QR</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => importInputRef.current?.click()}
+                className="min-h-[40px] px-4 py-2 rounded-xl border border-stone-200 dark:border-slate-700 text-stone-700 dark:text-slate-200 hover:bg-stone-50 dark:hover:bg-slate-800 text-xs sm:text-sm font-medium inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+              >
+                <Upload className="w-4 h-4" />
+                <span>Restore backup file</span>
+              </button>
+            </div>
             {backupFeedback && (
               <p
                 className={`mt-2.5 text-xs font-medium ${
@@ -2795,6 +2928,13 @@ export default function App() {
       />
 
       <QrShareModal payload={qrPayload} onClose={() => setQrPayload(null)} />
+
+      <QrRestoreModal
+        open={qrRestoreOpen}
+        onClose={() => setQrRestoreOpen(false)}
+        onDetectedText={handleScannedRestoreText}
+        onPickJsonFile={() => importInputRef.current?.click()}
+      />
 
       <ReceiptLightbox
         expense={lightboxExpense}

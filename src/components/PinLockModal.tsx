@@ -12,19 +12,46 @@ interface PinLockModalProps {
   onCancelSet: () => void;
 }
 
+const PIN_LOCKOUT_KEY = 'campsplit-pin-lockout';
+
+function readLockout(): { fails: number; lockedUntil: number } {
+  try {
+    const raw = localStorage.getItem(PIN_LOCKOUT_KEY);
+    if (!raw) return { fails: 0, lockedUntil: 0 };
+    const parsed = JSON.parse(raw) as { fails?: number; lockedUntil?: number };
+    return {
+      fails: Number.isFinite(parsed.fails) ? Number(parsed.fails) : 0,
+      lockedUntil: Number.isFinite(parsed.lockedUntil) ? Number(parsed.lockedUntil) : 0,
+    };
+  } catch {
+    return { fails: 0, lockedUntil: 0 };
+  }
+}
+
+function writeLockout(fails: number, lockedUntil: number) {
+  try {
+    if (fails === 0 && lockedUntil === 0) localStorage.removeItem(PIN_LOCKOUT_KEY);
+    else localStorage.setItem(PIN_LOCKOUT_KEY, JSON.stringify({ fails, lockedUntil }));
+  } catch {
+    // ignore
+  }
+}
+
 export function PinLockModal({ mode, lock, onUnlock, onSetPin, onCancelSet }: PinLockModalProps) {
+  const initialLockout = readLockout();
   const [pin1, setPin1] = useState('');
   const [pin2, setPin2] = useState('');
   const [err, setErr] = useState('');
-  const [fails, setFails] = useState(0);
-  const [lockedUntil, setLockedUntil] = useState(0);
+  const [fails, setFails] = useState(initialLockout.fails);
+  const [lockedUntil, setLockedUntil] = useState(initialLockout.lockedUntil);
 
   if (!mode) return null;
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (Date.now() < lockedUntil) {
-      setErr('Too many attempts. Please wait a moment.');
+      const secs = Math.max(1, Math.ceil((lockedUntil - Date.now()) / 1000));
+      setErr(`Too many attempts. Wait ${secs}s before trying again.`);
       return;
     }
     if (!window.crypto || !crypto.subtle) {
@@ -46,6 +73,7 @@ export function PinLockModal({ mode, lock, onUnlock, onSetPin, onCancelSet }: Pi
       setPin1('');
       setPin2('');
       setErr('');
+      writeLockout(0, 0);
       onSetPin({ salt, hash });
       return;
     }
@@ -57,6 +85,8 @@ export function PinLockModal({ mode, lock, onUnlock, onSetPin, onCancelSet }: Pi
     const check = await hashPin(pin1, lock.salt);
     if (check === lock.hash) {
       setFails(0);
+      setLockedUntil(0);
+      writeLockout(0, 0);
       setPin1('');
       setErr('');
       onUnlock();
@@ -64,11 +94,16 @@ export function PinLockModal({ mode, lock, onUnlock, onSetPin, onCancelSet }: Pi
       const nextFails = fails + 1;
       setFails(nextFails);
       setPin1('');
-      setErr('Wrong PIN.');
+      let nextUntil = 0;
       if (nextFails >= 3) {
-        const waitMs = Math.min(30, nextFails * 5) * 1000;
-        setLockedUntil(Date.now() + waitMs);
+        const waitMs = Math.min(60, (nextFails - 2) * 10) * 1000;
+        nextUntil = Date.now() + waitMs;
+        setLockedUntil(nextUntil);
+        setErr(`Wrong PIN. Locked for ${Math.round(waitMs / 1000)}s.`);
+      } else {
+        setErr('Wrong PIN.');
       }
+      writeLockout(nextFails, nextUntil);
     }
   };
 

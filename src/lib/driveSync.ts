@@ -325,6 +325,9 @@ function doGet() {
 }
 
 function doPost(e) {
+  if (!FOLDER_ID || FOLDER_ID === 'PASTE_YOUR_FOLDER_ID') {
+    return out_({ ok: false, error: 'set FOLDER_ID in Code.gs first' });
+  }
   if (ADMIN_CODE.length < 12 || ADMIN_CODE === 'CHOOSE_AN_ADMIN_CODE') {
     return out_({ ok: false, error: 'set a stronger ADMIN_CODE in the script (12+ characters)' });
   }
@@ -365,6 +368,9 @@ function doPost(e) {
       if (!isInFolder_(rf) || rf.isTrashed()) return out_({ ok: false, error: 'receipt not found' });
       const blob = rf.getBlob();
       const mime = blob.getContentType() || 'image/jpeg';
+      if (['image/jpeg', 'image/png', 'image/webp', 'image/gif'].indexOf(mime) < 0) {
+        return out_({ ok: false, error: 'invalid receipt file type' });
+      }
       const b64 = Utilities.base64Encode(blob.getBytes());
       return out_({ ok: true, dataUrl: 'data:' + mime + ';base64,' + b64, name: rf.getName(), url: rf.getUrl() });
     } catch (err) {
@@ -427,9 +433,12 @@ function doPost(e) {
     if (r.action === 'users_list') return out_({ ok: true, users: users_() });
     if (r.action === 'users_add') {
       const d = r.data || {}, u = users_();
+      const uname = String(d.name || '').trim().slice(0, 40);
+      if (!uname) return out_({ ok: false, error: 'missing viewer name' });
+      if (u.length >= 50) return out_({ ok: false, error: 'viewer link limit reached' });
       u.push({
         id: Utilities.getUuid().slice(0, 8),
-        name: String(d.name || '').slice(0, 40),
+        name: uname,
         code: shortCode_(),
         show: Array.isArray(d.show) ? cleanShow_(d.show) : SECS,
         ts: Date.now()
@@ -449,7 +458,8 @@ function doPost(e) {
       return out_({ ok: true, users: u });
     }
     if (r.action === 'users_remove') {
-      const u = users_().filter(x => x.id !== r.data);
+      const targetId = String(r.data || '');
+      const u = users_().filter(x => x.id !== targetId);
       saveUsers_(u);
       return out_({ ok: true, users: u });
     }

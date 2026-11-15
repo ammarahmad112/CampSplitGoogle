@@ -45,7 +45,10 @@ export function ReceiptLightbox({ expense, currency, syncCfg, onClose }: Receipt
         try {
           const res = await callDriveApi(syncCfg.url, syncCfg.code, 'receipt_get', { fileId: rec.id });
           if (active) {
-            if (res.ok && res.dataUrl) {
+            const validImgUrl =
+              typeof res.dataUrl === 'string' &&
+              /^data:image\/(jpeg|png|webp|gif);base64,[A-Za-z0-9+/=]+$/i.test(res.dataUrl);
+            if (res.ok && validImgUrl && res.dataUrl) {
               setSrc(res.dataUrl);
               setError('');
             } else if (!rec.thumb) {

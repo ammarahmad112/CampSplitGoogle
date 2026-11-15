@@ -49,11 +49,12 @@ export function normalizeState(raw: unknown): TripState {
   const rawTrip = o.trip && typeof o.trip === 'object' ? (o.trip as Record<string, unknown>) : {};
   const imgStr = typeof rawTrip.img === 'string' ? rawTrip.img : '';
 
+  const cleanVal = Math.max(0, num(rawTrip.clean ?? b.trip.clean));
   const trip = {
     name: String(rawTrip.name ?? b.trip.name).slice(0, 60) || 'Camp Split',
     emoji: String(rawTrip.emoji ?? b.trip.emoji).slice(0, 4) || '🏕️',
     cur: String(rawTrip.cur ?? b.trip.cur).slice(0, 3) || '$',
-    clean: num(rawTrip.clean ?? b.trip.clean),
+    clean: cleanVal,
     start: dt(rawTrip.start) || b.trip.start,
     img: /^data:image\/(jpeg|png|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(imgStr) ? imgStr : '',
   };
@@ -81,7 +82,7 @@ export function normalizeState(raw: unknown): TripState {
     return {
       id: sid(e.id),
       desc: String(e.desc ?? '').slice(0, 120),
-      amt: num(e.amt),
+      amt: Math.max(0, num(e.amt)),
       by: sid(e.by),
       date: dt(e.date),
       cat: (['food', 'rent', 'fuel', 'other'].includes(String(e.cat)) ? e.cat : 'other') as Expense['cat'],
@@ -94,13 +95,13 @@ export function normalizeState(raw: unknown): TripState {
     id: sid(x.id),
     from: sid(x.from),
     to: sid(x.to),
-    amt: num(x.amt),
+    amt: Math.max(0, num(x.amt)),
   }));
 
   const contribs = arr<Record<string, unknown>>(o.contribs).map((x) => ({
     id: sid(x.id),
     who: sid(x.who),
-    amt: num(x.amt),
+    amt: Math.max(0, num(x.amt)),
     date: dt(x.date),
   }));
 
@@ -121,10 +122,16 @@ export function normalizeState(raw: unknown): TripState {
   };
 
   const lock = o.lock && typeof o.lock === 'object' ? (o.lock as Record<string, unknown>) : null;
-  if (lock && typeof lock.salt === 'string' && typeof lock.hash === 'string') {
+  if (
+    lock &&
+    typeof lock.salt === 'string' &&
+    typeof lock.hash === 'string' &&
+    /^[a-zA-Z0-9_-]{6,64}$/.test(lock.salt) &&
+    /^[0-9a-f]{64}$/i.test(lock.hash)
+  ) {
     result.lock = { salt: lock.salt, hash: lock.hash };
   }
-  if (typeof o.lastBackup === 'number') {
+  if (typeof o.lastBackup === 'number' && Number.isFinite(o.lastBackup)) {
     result.lastBackup = o.lastBackup;
   }
   if (o._calc && typeof o._calc === 'object') {
